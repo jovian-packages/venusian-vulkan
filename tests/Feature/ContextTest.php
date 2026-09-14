@@ -39,7 +39,7 @@ it('boots a headless instance, device, and queue', function () {
         ->and($context->device)->toBeGreaterThan(0)
         ->and($context->queue)->toBeGreaterThan(0)
         ->and($context->queueFamily)->toBeGreaterThanOrEqual(0)
-        ->and($context->wsi)->toBe('')
+        ->and($context->instanceExtensions)->toBe([])
         ->and($context->loaderVersion)->toBeInstanceOf(ApiVersion::class)
         ->and($context->maxPushConstantsSize)->toBeGreaterThanOrEqual(64)
         ->and($context->maxTextureSize)->toBeGreaterThanOrEqual(64)
@@ -100,11 +100,11 @@ it('maps a host-visible buffer for a write/read roundtrip', function () {
 
 it('caches the engine context and refuses a later WSI mismatch', function () {
     $engine = new VulkanEngine;
-    $first = $engine->context('');
+    $first = $engine->context();
 
     expect($first)->toBeInstanceOf(VulkanContext::class)
-        ->and($engine->context(''))->toBe($first);
+        ->and($engine->context([]))->toBe($first);
 
-    expect(fn () => $engine->context('VK_EXT_metal_surface'))
+    expect(fn () => $engine->context(['VK_KHR_surface', 'VK_EXT_metal_surface']))
         ->toThrow(VulkanDrawingException::class);
 });

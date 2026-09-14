@@ -37,16 +37,21 @@ abstraction here — that is Surface's job.
 ## Package rules (quick) — 0.8.x
 
 - Composer: `jovian/venusian-vulkan` **0.8.0**. PHP `^8.4|^8.5|^8.6`.
-  Requires `jovian/vulkan`, `jovian/metal`, `surface/contracts`,
-  `surface/drawing`, `venusian-voyager/contracts`,
-  `venusian-voyager/nuts-and-bolts`.
+  Requires `jovian/vulkan`, `surface/contracts`, `surface/drawing`,
+  `venusian-voyager/contracts`, `venusian-voyager/nuts-and-bolts`.
+  `jovian/metal` is a `suggest` (macOS LAYER path only; it needs
+  `ext-metal`, so Linux cannot install it). `MetalLayerHost` throws
+  `noHostForPlatform` without it; never touch a Metal symbol elsewhere.
 - Namespace root is `Jovian\Venusian\Vulkan\` at `src/`. Tests live under
   `Venusian\Tests\`.
 - **The provider binds `gpu.vulkan`.** That container alias is the entire
   seam to Surface; installing this package is the whole of what makes the
   Vulkan engine available. Do not rename it.
-- **`surfaceKind()` is `LAYER`.** MoltenVK presents into a `CAMetalLayer`
-  through `VK_EXT_metal_surface`. A Linux Wayland host is a later slice.
+- **`surfaceKind()` is `LAYER` on Darwin, `VULKAN_SURFACE` elsewhere.**
+  MoltenVK presents into a `CAMetalLayer` (minted, or lent through
+  `GPUHost->layer`). Elsewhere the host lends a `VulkanSurfaceLender`
+  (`GPUHost->vk`); the context enables every extension it names. The
+  `SurfaceHost`'s `destroySurface()` is the only surface destroyer.
 - **Implement Surface's drawing contracts, do not re-declare policy.**
   `Executor` and `GPUEngineDriver` own the intersection. `Contracts\VulkanDrawing`
   is the bespoke half a sketch reaches beside the Painter, through
@@ -59,7 +64,8 @@ abstraction here — that is Surface's job.
 - **Portability by enumeration, not OS.** Enable
   `VK_KHR_portability_enumeration` + `ENUMERATE_PORTABILITY_BIT_KHR` and
   `VK_KHR_portability_subset` when the loader lists them. No
-  `PHP_OS_FAMILY` in `src/`.
+  `PHP_OS_FAMILY` in `src/` — `VulkanEngine::surfaceKind()` is the one
+  sanctioned exception (asked before any instance exists).
 - **One frame in flight.** Staging growth and texture release `retire()`
   handles; `reap()` runs after the frame fence. `vkDeviceWaitIdle` only
   at swapchain recreate and `release()`.
@@ -72,7 +78,9 @@ abstraction here — that is Surface's job.
 ## Verification
 
 Pure-logic code is covered by Pest with no extension present. Feature
-tests need `ext-vulkan`; AttachTest also needs Darwin + `ext-metal`.
+tests need `ext-vulkan`; AttachTest also needs Darwin + `ext-metal` +
+`jovian/metal` (`composer require jovian/metal` on the Mac; skipped
+without it).
 
 ```bash
 vendor/bin/pest

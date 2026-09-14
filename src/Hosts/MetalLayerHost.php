@@ -8,6 +8,7 @@ use Jovian\Bindings\Metal\QuartzCore\CAMetalLayer;
 use Jovian\Bindings\Metal\Runtime\Bridge as MetalBridge;
 use Jovian\Bindings\Metal\Values\CGSize;
 use Jovian\Bindings\Vulkan\Ext\EXTMetalSurface;
+use Jovian\Bindings\Vulkan\Ext\KHRSurface;
 use Jovian\Bindings\Vulkan\Structs\VkMetalSurfaceCreateInfoEXT;
 use Jovian\Venusian\Vulkan\Contracts\SurfaceHost;
 use Jovian\Venusian\Vulkan\Exceptions\VulkanDrawingException;
@@ -15,7 +16,9 @@ use Jovian\Venusian\Vulkan\Support\Blocks;
 
 /**
  * The only jovian/metal importer. Mints a bare CAMetalLayer; MoltenVK
- * owns device, pixelFormat, and framebufferOnly.
+ * owns device, pixelFormat, and framebufferOnly. jovian/metal is a
+ * suggest (macOS): without it or ext-metal, mint() and lent() throw
+ * noHostForPlatform before any Metal symbol is touched.
  */
 final class MetalLayerHost implements SurfaceHost
 {
@@ -27,7 +30,7 @@ final class MetalLayerHost implements SurfaceHost
 
     public static function mint(int $width, int $height, float $scale = 1.0): self
     {
-        if (! extension_loaded('metal')) {
+        if (! self::metalAvailable()) {
             throw VulkanDrawingException::noHostForPlatform();
         }
 
@@ -43,9 +46,44 @@ final class MetalLayerHost implements SurfaceHost
         return $host;
     }
 
+    /**
+     * A layer the Surface host owns and shows (an SDL Metal view). Adopted
+     * into ext-metal's registry — each side keeps its own retain — and sized
+     * like a minted one. The engine hands no layer back for it.
+     */
+    public static function lent(int $pointer, int $width, int $height, float $scale = 1.0): self
+    {
+        if (! self::metalAvailable()) {
+            throw VulkanDrawingException::noHostForPlatform();
+        }
+
+        $layer = CAMetalLayer::box(MetalBridge::adopt('CAMetalLayer', $pointer));
+        if (is_null($layer)) {
+            throw VulkanDrawingException::noHostForPlatform();
+        }
+
+        $host = new self($layer);
+        $host->contentsScale = $scale > 0.0 ? $scale : 1.0;
+        $host->setDrawableSize($width, $height);
+
+        return $host;
+    }
+
+    /** ext-metal loaded and jovian/metal installed. The class check autoloads; a missing package answers false, never fatals. */
+    private static function metalAvailable(): bool
+    {
+        return extension_loaded('metal') && class_exists(CAMetalLayer::class);
+    }
+
     public function wsiExtension(): string
     {
         return 'VK_EXT_metal_surface';
+    }
+
+    /** @return list<string> */
+    public function instanceExtensions(): array
+    {
+        return ['VK_KHR_surface', $this->wsiExtension()];
     }
 
     public function layerPointer(): int
@@ -94,6 +132,11 @@ final class MetalLayerHost implements SurfaceHost
         $blocks->release();
 
         return $surface;
+    }
+
+    public function destroySurface(int $instance, int $surface): void
+    {
+        KHRSurface::vkDestroySurfaceKHR($instance, $surface, 0);
     }
 
     public function release(): void

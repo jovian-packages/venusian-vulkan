@@ -9,8 +9,8 @@ resource: src/VulkanExecutor.php
 tags: [vulkan, executor, frame, readback, staging, moltenvk]
 status: draft
 generated:
-  by: cursor-grok-4.6/cursor
-  at: "2026-09-14T04:45:00Z"
+  by: claude-opus-5/claude-code
+  at: "2026-09-14T19:00:00Z"
 sources:
   - id: spec
     resource: ../../venusian/surface/docs/superpowers/specs/2026-09-13-gpu-drawing-slice3-vulkan-design.md
@@ -48,8 +48,10 @@ at `endFrame()`.[^spec]
 
 `release()` is terminal and idempotent: abandon recording, device idle,
 reap, destroy textures / staging / readback / swapchain / pipelines /
-passes / sync / pool / surface, then `host->release()` so the layer
-outlives every Vulkan object that referenced it.
+passes / sync / pool, `host->destroySurface()` (the host is the only
+surface destroyer), then `host->release()` so the layer outlives every
+Vulkan object that referenced it. A constructor throw after
+`createSurface` runs `release()` before rethrowing.
 
 # Staging
 

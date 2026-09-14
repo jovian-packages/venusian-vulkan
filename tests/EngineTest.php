@@ -12,12 +12,11 @@ use Surface\Contracts\Drawing\GPUEngine;
 use Surface\Contracts\Drawing\GPUEngineDriver;
 use Surface\Contracts\Drawing\SurfaceKind;
 
-it('declares VULKAN and LAYER', function () {
+it('declares VULKAN', function () {
     $engine = new VulkanEngine;
 
     expect($engine)->toBeInstanceOf(GPUEngineDriver::class)
-        ->and($engine->engine())->toBe(GPUEngine::VULKAN)
-        ->and($engine->surfaceKind())->toBe(SurfaceKind::LAYER);
+        ->and($engine->engine())->toBe(GPUEngine::VULKAN);
 });
 
 it('is published behind the gpu.vulkan alias', function () {
@@ -64,6 +63,8 @@ it('exposes the SurfaceHost and VulkanDrawing contracts the plan named', functio
         'setDrawableSize',
         'setContentsScale',
         'createSurface',
+        'destroySurface',
+        'instanceExtensions',
         'release',
     ])->and($drawing)->toEqualCanonicalizing([
         'instance',
@@ -91,4 +92,9 @@ it('MetalLayerHost implements SurfaceHost and refuses a mint without ext-metal',
 
     expect(fn () => MetalLayerHost::mint(64, 64))
         ->toThrow(VulkanDrawingException::class);
+});
+
+it('is a LAYER engine on macOS and a VULKAN_SURFACE engine elsewhere', function () {
+    expect((new VulkanEngine)->surfaceKind())
+        ->toBe(PHP_OS_FAMILY === 'Darwin' ? SurfaceKind::LAYER : SurfaceKind::VULKAN_SURFACE);
 });

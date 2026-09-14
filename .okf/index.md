@@ -15,8 +15,8 @@ concept here is `status: draft` until a human verifies it.
 
 * [executor.md](/executor.md) - frame lifecycle, staging cursor, deferred
   destruction, mid-frame readback reopen, and present
-* [seam.md](/seam.md) - Vulkan is a LAYER engine; who mints the
-  `CAMetalLayer`, who adopts it, who releases which retain
+* [seam.md](/seam.md) - LAYER on Darwin, VULKAN_SURFACE elsewhere; who
+  mints or lends the `CAMetalLayer` / `VkSurfaceKHR`, who releases which retain
 
 # Related bundles
 

@@ -19,7 +19,6 @@ use Jovian\Bindings\Vulkan\Enums\VkPipelineStageFlagBits;
 use Jovian\Bindings\Vulkan\Enums\VkResult;
 use Jovian\Bindings\Vulkan\Enums\VkShaderStageFlagBits;
 use Jovian\Bindings\Vulkan\Enums\VkSubpassContents;
-use Jovian\Bindings\Vulkan\Ext\KHRSurface;
 use Jovian\Bindings\Vulkan\Ext\KHRSwapchain;
 use Jovian\Bindings\Vulkan\Runtime\Bridge;
 use Jovian\Bindings\Vulkan\Structs\VkBufferImageCopy;
@@ -196,11 +195,21 @@ final class VulkanExecutor implements Executor, VulkanDrawing
             throw VulkanDrawingException::allocation();
         }
 
-        $this->allocateSync();
-        $this->allocateScratch();
-        $this->allocateStaging(Budget::STAGING_INITIAL_BYTES->value);
-        $this->host->setDrawableSize($this->pixelWidth, $this->pixelHeight);
-        $this->rebuildTarget();
+        try {
+            $this->allocateSync();
+            $this->allocateScratch();
+            $this->allocateStaging(Budget::STAGING_INITIAL_BYTES->value);
+            $this->host->setDrawableSize($this->pixelWidth, $this->pixelHeight);
+            $this->rebuildTarget();
+        } catch (\Throwable $failure) {
+            // A surface left alive keeps a lent window claimed (NATIVE_WINDOW_IN_USE on retry).
+            try {
+                $this->release();
+            } catch (\Throwable) {
+            }
+
+            throw $failure;
+        }
     }
 
     public static function declaredCapabilities(int $maxTextureSize): ExecutorCapabilities
@@ -589,7 +598,7 @@ final class VulkanExecutor implements Executor, VulkanDrawing
             VK10::vkDestroyCommandPool($this->context->device, $this->commandPool, 0);
         }
         if ($this->surface !== 0) {
-            KHRSurface::vkDestroySurfaceKHR($this->context->instance, $this->surface, 0);
+            $this->host->destroySurface($this->context->instance, $this->surface);
             $this->surface = 0;
         }
 

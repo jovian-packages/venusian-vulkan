@@ -1,6 +1,32 @@
 # Update Log
 
 ## 2026-09-14
+* **Packaging**: `jovian/metal` moved from `require` to `suggest` (macOS
+  LAYER path); path repository kept. Linux installs without `ext-metal`.
+  `MetalLayerHost::mint()` / `::lent()` throw `noHostForPlatform` unless
+  `ext-metal` is loaded and `jovian/metal` is installed. Test helper
+  `metalExtensionLoaded()` checks both. Concept `seam.md`.
+
+## 2026-09-14
+
+* **Surface ownership**: `SurfaceHost::destroySurface()` is the only
+  destroyer — `MetalLayerHost` calls `vkDestroySurfaceKHR`,
+  `LentSurfaceHost` calls the lender's. Executor calls it in `release()`
+  and when its constructor throws after `createSurface`.
+* **Extension set**: `SurfaceHost::instanceExtensions()`. The context
+  enables every extension a lender names and is cached by the order-free
+  set (`VulkanContext::extensionSet`); `wsi` string gone. The mint set is
+  unchanged. `VulkanContext::listedInstanceExtensions()` added.
+
+## 2026-09-14
+
+* **Lent attach**: `surfaceKind()` is `LAYER` on Darwin, `VULKAN_SURFACE`
+  elsewhere. `attach()` routes `GPUHost->vk` → `LentSurfaceHost`,
+  `GPUHost->layer > 0` → `MetalLayerHost::lent()`, else mint. Lent paths
+  answer `layer_pointer` 0. Lent-layer retain balance measured (adopt +1,
+  box +0, release −1). seam.md gains the platform table and lent hosts.
+
+## 2026-09-14
 
 * **Retina extent**: MoltenVK `currentExtent` is `bounds × contentsScale`
   (`naturalDrawableSizeMVK`), not `drawableSize`. Engine Trio showed the

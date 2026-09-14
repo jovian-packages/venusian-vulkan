@@ -25,7 +25,6 @@
     ],
     "require": {
         "php": "^8.4|^8.5|^8.6",
-        "jovian/metal": "^0.8.0",
         "jovian/vulkan": "^0.8.0",
         "surface/contracts": "^0.8.0",
         "surface/drawing": "^0.8.0",
@@ -35,6 +34,9 @@
     },
     "require-dev": {
         "pestphp/pest": "^4"
+    },
+    "suggest": {
+        "jovian/metal": "^0.8.0 - macOS: required for the LAYER path (MetalLayerHost)"
     },
     "autoload": {
         "psr-4": {

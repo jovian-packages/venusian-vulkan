@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Jovian\Venusian\Vulkan;
 
 use Jovian\Venusian\Vulkan\Exceptions\VulkanDrawingException;
+use Jovian\Venusian\Vulkan\Hosts\LentSurfaceHost;
 use Jovian\Venusian\Vulkan\Hosts\MetalLayerHost;
 use Surface\Contracts\Drawing\GPUAttachment;
 use Surface\Contracts\Drawing\GPUEngine;
@@ -25,20 +26,27 @@ final class VulkanEngine implements GPUEngineDriver
         return GPUEngine::VULKAN;
     }
 
+    /** MoltenVK draws through a CAMetalLayer; everywhere else the host lends a VkSurfaceKHR. */
     public function surfaceKind(): SurfaceKind
     {
-        return SurfaceKind::LAYER;
+        return PHP_OS_FAMILY === 'Darwin' ? SurfaceKind::LAYER : SurfaceKind::VULKAN_SURFACE;
     }
 
-    public function context(string $wsi = ''): VulkanContext
+    /**
+     * The one context, keyed by its instance extension set (order-free).
+     *
+     * @param  list<string>  $instanceExtensions  [] boots headless
+     */
+    public function context(array $instanceExtensions = []): VulkanContext
     {
+        $wanted = VulkanContext::extensionSet($instanceExtensions);
         if (is_null($this->context)) {
-            $this->context = VulkanContext::boot($wsi);
+            $this->context = VulkanContext::boot($wanted);
 
             return $this->context;
         }
 
-        if ($this->context->wsi !== $wsi) {
+        if ($this->context->instanceExtensions !== $wanted) {
             throw VulkanDrawingException::instanceExtensionMismatch();
         }
 
@@ -49,8 +57,21 @@ final class VulkanEngine implements GPUEngineDriver
     {
         $width = max(1, (int) round($host->width * $host->scale));
         $height = max(1, (int) round($host->height * $host->scale));
+
+        if (! is_null($host->vk)) {
+            $surfaceHost = new LentSurfaceHost($host->vk);
+
+            return new GPUAttachment(new VulkanExecutor($this->context($surfaceHost->instanceExtensions()), $surfaceHost, $width, $height));
+        }
+
+        if ($host->layer > 0) {
+            $surfaceHost = MetalLayerHost::lent($host->layer, $width, $height, $host->scale);
+
+            return new GPUAttachment(new VulkanExecutor($this->context($surfaceHost->instanceExtensions()), $surfaceHost, $width, $height));
+        }
+
         $surfaceHost = MetalLayerHost::mint($width, $height, $host->scale);
-        $context = $this->context($surfaceHost->wsiExtension());
+        $context = $this->context($surfaceHost->instanceExtensions());
 
         return new GPUAttachment(
             new VulkanExecutor($context, $surfaceHost, $width, $height),

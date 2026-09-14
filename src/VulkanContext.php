@@ -96,7 +96,10 @@ final class VulkanContext
         public readonly int $device,
         public readonly int $queue,
         public readonly int $queueFamily,
-        public readonly string $wsi,
+        /** @var list<string> The order-free set a SurfaceHost named; [] is headless. The engine's cache key. */
+        public readonly array $instanceExtensions,
+        /** @var list<string> What vkCreateInstance enabled: the set plus portability enumeration when listed. */
+        public readonly array $enabledInstanceExtensions,
         public readonly ApiVersion $loaderVersion,
         public readonly MemoryTypes $memoryTypes,
         public readonly int $maxTextureSize,
@@ -113,17 +116,21 @@ final class VulkanContext
         private readonly int $uploadFence,
     ) {}
 
-    public static function boot(string $wsi): self
+    /**
+     * @param  list<string>  $instanceExtensions  every extension the SurfaceHost names; [] boots headless
+     */
+    public static function boot(array $instanceExtensions): self
     {
         if (! Bridge::load()) {
             throw VulkanDrawingException::loader();
         }
 
+        $wanted = self::extensionSet($instanceExtensions);
         $blocks = new Blocks;
         $loaderVersion = Bridge::version();
-        $instance = self::createInstance($blocks, $wsi);
+        [$instance, $enabled] = self::createInstance($blocks, $wanted);
         [$physicalDevice, $queueFamily, $limits] = self::pickPhysicalDevice($blocks, $instance);
-        [$device, $queue] = self::createDevice($blocks, $physicalDevice, $queueFamily, $wsi);
+        [$device, $queue] = self::createDevice($blocks, $physicalDevice, $queueFamily, $wanted !== []);
 
         $memPropsBlock = $blocks->alloc(VkPhysicalDeviceMemoryProperties::size());
         VK10::vkGetPhysicalDeviceMemoryProperties($physicalDevice, $memPropsBlock);
@@ -143,7 +150,8 @@ final class VulkanContext
             device: $device,
             queue: $queue,
             queueFamily: $queueFamily,
-            wsi: $wsi,
+            instanceExtensions: $wanted,
+            enabledInstanceExtensions: $enabled,
             loaderVersion: $loaderVersion,
             memoryTypes: $memoryTypes,
             maxTextureSize: $limits['maxTextureSize'],
@@ -506,22 +514,55 @@ final class VulkanContext
         );
     }
 
-    private static function createInstance(Blocks $blocks, string $wsi): int
+    /**
+     * One order-free key for an instance extension set: unique, sorted.
+     *
+     * @param  list<string>  $extensions
+     * @return list<string>
+     */
+    public static function extensionSet(array $extensions): array
+    {
+        $set = array_values(array_unique($extensions));
+        sort($set);
+
+        return $set;
+    }
+
+    /**
+     * @return list<string> Instance extensions the loader lists.
+     */
+    public static function listedInstanceExtensions(): array
+    {
+        if (! Bridge::load()) {
+            throw VulkanDrawingException::loader();
+        }
+
+        $blocks = new Blocks;
+        try {
+            return self::enumerateInstanceExtensions($blocks);
+        } finally {
+            $blocks->release();
+        }
+    }
+
+    /**
+     * @param  list<string>  $extensions
+     * @return array{0: int, 1: list<string>}
+     */
+    private static function createInstance(Blocks $blocks, array $extensions): array
     {
         $listed = self::enumerateInstanceExtensions($blocks);
         $wanted = [];
-        if ($wsi !== '') {
-            foreach (['VK_KHR_surface', $wsi] as $extension) {
-                if (! in_array($extension, $listed, true)) {
-                    throw VulkanDrawingException::missingExtension($extension);
-                }
-                $wanted[] = $extension;
+        foreach ($extensions as $extension) {
+            if (! in_array($extension, $listed, true)) {
+                throw VulkanDrawingException::missingExtension($extension);
             }
+            $wanted[] = $extension;
         }
-        $portability = in_array('VK_KHR_portability_enumeration', $listed, true);
-        if ($portability) {
+        if (in_array('VK_KHR_portability_enumeration', $listed, true) && ! in_array('VK_KHR_portability_enumeration', $wanted, true)) {
             $wanted[] = 'VK_KHR_portability_enumeration';
         }
+        $portability = in_array('VK_KHR_portability_enumeration', $wanted, true);
 
         $appInfo = $blocks->keep((new VkApplicationInfo(
             pApplicationName: $blocks->cstring('venusian'),
@@ -543,7 +584,7 @@ final class VulkanContext
             throw VulkanDrawingException::loader();
         }
 
-        return $instance;
+        return [$instance, $wanted];
     }
 
     /**
@@ -661,11 +702,11 @@ final class VulkanContext
     /**
      * @return array{0: int, 1: int}
      */
-    private static function createDevice(Blocks $blocks, int $physicalDevice, int $queueFamily, string $wsi): array
+    private static function createDevice(Blocks $blocks, int $physicalDevice, int $queueFamily, bool $presents): array
     {
         $listed = self::enumerateDeviceExtensions($blocks, $physicalDevice);
         $wanted = [];
-        if ($wsi !== '') {
+        if ($presents) {
             if (! in_array('VK_KHR_swapchain', $listed, true)) {
                 throw VulkanDrawingException::missingExtension('VK_KHR_swapchain');
             }

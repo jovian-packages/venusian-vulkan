@@ -9,8 +9,11 @@ namespace Jovian\Venusian\Vulkan\Contracts;
  */
 interface SurfaceHost
 {
-    /** 'VK_EXT_metal_surface' today; a later slice adds 'VK_KHR_wayland_surface'. */
+    /** The window-system surface extension: 'VK_EXT_metal_surface' for a layer, whatever a lender names otherwise. */
     public function wsiExtension(): string;
+
+    /** @return list<string> Every instance extension the context must enable for this host, VK_KHR_surface included. */
+    public function instanceExtensions(): array;
 
     /** Raw layer bits for GPUAttachment; 0 when the window engine adopts nothing. */
     public function layerPointer(): int;
@@ -25,6 +28,9 @@ interface SurfaceHost
 
     /** VkSurfaceKHR bits. */
     public function createSurface(int $instance): int;
+
+    /** The only destroyer of a surface this host created. The executor calls it once, after the swapchain is gone. */
+    public function destroySurface(int $instance, int $surface): void;
 
     public function release(): void;
 }
