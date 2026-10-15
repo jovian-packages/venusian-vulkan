@@ -2,27 +2,10 @@
 okf_version: "0.2"
 ---
 
-# jovian/venusian-vulkan — knowledge bundle
+# jovian/venusian-vulkan
 
-Vulkan composition for Venusian Surface GPU drawing. `jovian/vulkan` projects
-`ext-vulkan` one call at a time; this package owns the frame, the swapchain,
-and the MoltenVK layer seam. Surface talks to it only through `gpu.vulkan`.
+* [Engine](architecture/engine.md) - VulkanDevice: instance and device selection, the GENERAL-layout target, three compatible render passes, five pipelines over one shader pair, push constants, per-frame descriptor pool and transient retirement, staging readback and upload, the swapchain present path.
 
-Read this index first, then open only the concepts the task needs. Every
-concept here is `status: draft` until a human verifies it.
+# Runbooks
 
-# Concepts
-
-* [executor.md](/executor.md) - frame lifecycle, staging cursor, deferred
-  destruction, mid-frame readback reopen, and present
-* [seam.md](/seam.md) - LAYER on Darwin, VULKAN_SURFACE elsewhere; who
-  mints or lends the `CAMetalLayer` / `VkSurfaceKHR`, who releases which retain
-
-# Related bundles
-
-* [jovian/vulkan](../../vulkan/.okf/index.md) - the typed projection this
-  package composes
-* [jovian/metal](../../metal/.okf/index.md) - `pointerOf` and `CAMetalLayer`
-  used by the one-file host
-* [venusian/surface](../../../venusian/surface/.okf/index.md) - the
-  engine-free contracts and Painter this package implements
+* [Testing](runbooks/testing.md) - real-GPU Pest suite on the Mac (MoltenVK) and the Pi (V3DV), Surface's GpuParity from the sibling checkout, temporary path repository, php84, zhp, Pi php in the Wayland session.

@@ -1,34 +1,31 @@
 <?php
 
-declare(strict_types=1);
+namespace Jovian\Engines\Vulkan\Providers;
 
-namespace Jovian\Venusian\Vulkan\Providers;
-
-use Jovian\Venusian\Vulkan\VulkanEngine;
+use Jovian\Engines\Vulkan\VulkanDevice;
+use Surface\Drawing\DrawingManager;
+use Surface\Drawing\Gpu\GpuRenderingEngine;
 use Voyager\NutsAndBolts\ServiceProvider;
 
 /**
- * Publishes the Vulkan GPU engine under the alias Surface looks for.
+ * Registers the 'vulkan' engine with the drawing manager: each renderer() call
+ * builds a new engine over a new VulkanDevice from the shared arguments.
  */
 class VenusianVulkanServiceProvider extends ServiceProvider
 {
-    /**
-     * Bind the engine as a singleton behind 'gpu.vulkan'.
-     *
-     * Surface's GPUEngineManager resolves that string and nothing else, so
-     * installing this package is the whole of what makes Vulkan drawing available.
-     *
-     * @return void
-     */
     public function register(): void
     {
-        $this->app->singleton(VulkanEngine::class);
-        $this->app->alias(VulkanEngine::class, 'gpu.vulkan');
+
     }
 
-    /**
-     * Nothing to boot. The engine opens the loader when it is first asked to attach.
-     * @return void
-     */
-    public function boot(): void {}
+    public function boot(): void
+    {
+        self::extend($this->app->get('drawing'));
+    }
+
+    /** The engine's creator, on any drawing manager. */
+    public static function extend(DrawingManager $drawing): void
+    {
+        $drawing->extend('vulkan', fn (array $args, DrawingManager $drawing): GpuRenderingEngine => GpuRenderingEngine::from(new VulkanDevice, $args, $drawing));
+    }
 }

@@ -2,110 +2,103 @@
 
 declare(strict_types=1);
 
-/*
-| Pest bootstrap for jovian/venusian-vulkan.
-|
-| Extension-dependent suites skip when ext-vulkan (and, for attach, ext-metal
-| with the suggested jovian/metal) is absent. A skipped test is not evidence the GPU path works — run those
-| on a Mac with the extensions loaded (export HERD_PHP_84_INI_SCAN_DIR first).
-*/
+use Jovian\Engines\Vulkan\VulkanDevice;
+use Surface\Contracts\Rasterize\Edges;
+use Surface\Drawing\DrawingManager;
+use Surface\Drawing\Gpu\GpuRenderingEngine;
+use Surface\Framebuffers\FramebufferManager;
+use Surface\Rasterize\RasterizeManager;
 
-use Jovian\Venusian\Vulkan\VulkanContext;
-use Surface\Contracts\Drawing\VulkanSurfaceLender;
-
-function vulkanExtensionLoaded(): bool
-{
-    return extension_loaded('vulkan');
+if (! extension_loaded('vulkan')) {
+    throw new RuntimeException('venusian-vulkan tests need ext-vulkan loaded.');
 }
 
-/** ext-metal loaded and jovian/metal (a suggest) installed — the Metal symbols the tests touch exist. */
-function metalExtensionLoaded(): bool
+const VULKAN_MAC = PHP_OS_FAMILY === 'Darwin';
+
+// The parity suite every engine runs lives in the Surface checkout (export-ignored from its package).
+$parity = (getenv('SURFACE_TESTS') ?: dirname(__DIR__, 3).'/venusian/surface/tests').'/Support/GpuParity/GpuParity.php';
+if (! is_file($parity)) {
+    throw new RuntimeException("The GPU parity suite was not found at {$parity}: set SURFACE_TESTS to a Surface checkout's tests directory.");
+}
+require_once $parity;
+
+/** A Vulkan engine with no output, its own device. */
+function vulkanEngine(int $width = 64, int $height = 32, Edges $edges = Edges::ANTIALIASED): GpuRenderingEngine
 {
-    return extension_loaded('metal') && class_exists(\Jovian\Bindings\Metal\Runtime\Registry::class);
+    return new GpuRenderingEngine(new VulkanDevice, $width, $height, $edges);
 }
 
-function vulkanRequireExtension(): void
+/** The RGBA8 pixel at ($x, $y) of a tightly packed frame, as hex. */
+function pixelOf(string $rgba8, int $width, int $x, int $y): string
 {
-    if (! vulkanExtensionLoaded()) {
-        test()->skip('ext-vulkan is not loaded');
-    }
+    return bin2hex(substr($rgba8, ($y * $width + $x) * 4, 4));
 }
 
-function vulkanContext(): VulkanContext
+/** A config repository over an array, as Surface's own suite builds one. */
+function vulkanConfig(array $items): object
 {
-    static $context = null;
-
-    vulkanRequireExtension();
-
-    if (is_null($context)) {
-        $context = VulkanContext::boot([]);
-    }
-
-    return $context;
-}
-
-/** One Surface vertex: x y z r g b a u v. */
-function vulkanVertex(float $x, float $y, float $r, float $g, float $b, float $a = 1.0, float $u = 0.0, float $v = 0.0): string
-{
-    return pack('g9', $x, $y, 0.0, $r, $g, $b, $a, $u, $v);
-}
-
-/**
- * A VULKAN_SURFACE lender that records the instances it was asked about.
- * Here, not in a test file, so any single file can run alone.
- *
- * @param  list<string>  $extensions
- */
-function lender(array $extensions = ['VK_KHR_surface', 'VK_KHR_wayland_surface'], int $surface = 77): VulkanSurfaceLender
-{
-    return new class($extensions, $surface) implements VulkanSurfaceLender
+    return new class($items)
     {
-        /** @var list<int> */
-        public array $instances = [];
+        public function __construct(private readonly array $items) {}
 
-        /** @var list<array{int, int}> */
-        public array $destroyed = [];
-
-        /** @param list<string> $extensions */
-        public function __construct(private array $extensions, private int $surface) {}
-
-        public function instanceExtensions(): array
+        public function get(string $key, mixed $default = null): mixed
         {
-            return $this->extensions;
-        }
-
-        public function createSurface(int $instance): int
-        {
-            $this->instances[] = $instance;
-
-            return $this->surface;
-        }
-
-        public function destroySurface(int $instance, int $surface): void
-        {
-            $this->destroyed[] = [$instance, $surface];
-        }
-
-        public function drawableSize(): array
-        {
-            return [640, 480];
+            return $this->items[$key] ?? $default;
         }
     };
 }
 
-/**
- * The first window-system instance extension the loader lists. Picked from
- * the loader, never from the OS — the Pi runs x11 under XWayland.
- *
- * @param  list<string>  $listed
- */
-function listedWsi(array $listed): ?string
+/** A drawing manager without a container: Velvet registered, nothing else. */
+function vulkanDrawing(): DrawingManager
 {
-    foreach (['VK_EXT_metal_surface', 'VK_KHR_xlib_surface', 'VK_KHR_xcb_surface', 'VK_KHR_wayland_surface'] as $extension) {
-        if (in_array($extension, $listed, true)) {
-            return $extension;
+    $framebuffers = new class extends FramebufferManager
+    {
+        public function __construct()
+        {
+            $this->config = vulkanConfig([]);
+        }
+    };
+    $rasterize = new class extends RasterizeManager
+    {
+        public function __construct()
+        {
+            $this->config = vulkanConfig([]);
+        }
+    };
+
+    return new DrawingManager(vulkanConfig([]), $framebuffers, $rasterize);
+}
+
+/**
+ * The process's memory now, in MB, GPU allocations included: macOS's
+ * phys_footprint (private GPU textures count there, not in RSS); on Linux
+ * VmRSS plus each DRM client's drm-total-* (V3D's buffers are not in VmRSS).
+ */
+function residentMb(): float
+{
+    if (PHP_OS_FAMILY === 'Darwin') {
+        preg_match('/phys_footprint:\s+([\d.]+)\s+(KB|MB|GB)/', (string) shell_exec('footprint -p '.getmypid().' 2>/dev/null'), $m)
+            || throw new RuntimeException('footprint gave no phys_footprint for this process.');
+
+        return (float) $m[1] * ['KB' => 1 / 1024, 'MB' => 1, 'GB' => 1024][$m[2]];
+    }
+    preg_match('/^VmRSS:\s+(\d+) kB/m', (string) file_get_contents('/proc/self/status'), $m)
+        || throw new RuntimeException('/proc/self/status gave no VmRSS.');
+    $kib = (int) $m[1];
+    $clients = [];
+    // An fd can close between the listing and the read: that entry is skipped, not reported.
+    set_error_handler(fn (): bool => true);
+    try {
+        $infos = array_map(fn (string $fdinfo): string => (string) file_get_contents($fdinfo), glob('/proc/self/fdinfo/*') ?: []);
+    } finally {
+        restore_error_handler();
+    }
+    foreach ($infos as $info) {
+        if (preg_match('/^drm-client-id:\s+(\d+)/m', $info, $client) && ! isset($clients[$client[1]])) {
+            preg_match_all('/^drm-total-\S+:\s+(\d+) KiB/m', $info, $totals);
+            $clients[$client[1]] = array_sum(array_map('intval', $totals[1]));
         }
     }
 
-    return null;
+    return ($kib + array_sum($clients)) / 1024;
 }
