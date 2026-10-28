@@ -12,7 +12,7 @@
         "moltenvk"
     ],
     "license": "MIT",
-    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/venusian-vulkan/0.10.x",
+    "homepage": "https://venusian.projectsaturnstudios.com/ecosystem/jovian/venusian-vulkan/0.11.x",
     "support": {
         "issues": "https://github.com/jovian-packages/venusian-vulkan/issues",
         "source": "https://github.com/jovian-packages/venusian-vulkan"
@@ -24,16 +24,16 @@
         }
     ],
     "require": {
-        "php": "^8.4|^8.5|^8.6",
-        "ext-vulkan": "^0.10",
-        "venusian-surface/contracts": "^0.10.0",
-        "venusian-surface/drawing": "^0.10.0",
-        "venusian-surface/framebuffers": "^0.10.0",
-        "venusian-voyager/nuts-and-bolts": "^0.10.1"
+        "php": "~8.4.27||^8.5.12",
+        "ext-vulkan": "^0.11.0",
+        "venusian-surface/contracts": "^0.11.0",
+        "venusian-surface/drawing": "^0.11.0",
+        "venusian-surface/framebuffers": "^0.11.0",
+        "venusian-voyager/nuts-and-bolts": "^0.11.0"
     },
     "require-dev": {
         "pestphp/pest": "^4",
-        "venusian-surface/fonts": "^0.10.0"
+        "venusian-surface/fonts": "^0.11.0"
     },
     "autoload": {
         "psr-4": {
@@ -53,7 +53,7 @@
     },
     "extra": {
         "branch-alias": {
-            "dev-main": "0.10.x-dev"
+            "dev-main": "0.11.x-dev"
         },
         "venusian": {
             "providers": [

@@ -16,7 +16,7 @@ sources:
 
 * The suite runs the real GPU. `tests/Pest.php` fails with a message without ext-vulkan.
 * `tests/Pest.php` requires Surface's `GpuParity` from the sibling checkout (`dev/venusian/surface/tests`); `SURFACE_TESTS` overrides the directory.
-* Surface's 0.10 splits are not on Packagist: add a path repository to `<surface>/src/Surface/*` for the run, `composer update`. Keep the committed `composer.json` aside and put it back before every commit.
+* Surface's 0.11 splits are not on Packagist: add a path repository to `<surface>/src/Surface/*` for the run, `composer update`. Keep the committed `composer.json` aside and put it back before every commit.
 * Mac: `php84 -d memory_limit=128M vendor/bin/pest`, then `zhp` (ZTS). MoltenVK through Homebrew's loader; portability enumeration and the portability subset are enabled where listed.
 * `tests/PresentTest.php` presents into a `CAMetalLayer` with no view (ext-metal): Mac only. Off macOS those tests skip.
 * `tests/DmabufTest.php`: the export on Linux with the two extensions (V3DV); its first test runs everywhere (no export before adopting; without the extensions, the refusal naming them).

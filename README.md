@@ -15,7 +15,7 @@ The engine's framebuffer is a `VulkanFramebuffer`, a Surface `GLFramebuffer`.
 - A Vulkan 1.1+ GPU (the CPU device is skipped) with a graphics queue and `VK_KHR_swapchain`. Anti-aliased edges need 4 samples for colour and stencil; a device with fewer refuses them by name.
 - macOS: Homebrew `vulkan-loader`, `vulkan-headers`, `molten-vk`. Presenting into a canvas's `CAMetalLayer` also needs ext-metal.
 - Raspberry Pi: Mesa V3DV. Run inside the user's session (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`) so the loader finds the display.
-- PHP 8.4, ext-vulkan ^0.10 (with `VK_API_VERSION_1_1`, the properties2 / Wayland / xcb / Xlib surface names, `VkMemoryBarrier`, `VkMemoryDedicatedAllocateInfo` and `vk_close_fd`), `venusian-surface/drawing` ^0.10.
+- PHP 8.4, ext-vulkan ^0.11 (with `VK_API_VERSION_1_1`, the properties2 / Wayland / xcb / Xlib surface names, `VkMemoryBarrier`, `VkMemoryDedicatedAllocateInfo` and `vk_close_fd`), `venusian-surface/drawing` ^0.11.
 - No window code: the engine opens no window. A window's surface arrives from a toolkit canvas as a `LentSurface`.
 
 ## Install
