@@ -192,6 +192,18 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
 
     protected const int COPY = 4;
 
+    /** ROUNDRECT and ROUNDRING: inside the rounded box and, for a ring, outside the inset one. */
+    protected const int ROUNDBOX = 5;
+
+    /** SHADOW: 1 − smoothstep(−blur, blur, d) at the pixel's centre. */
+    protected const int SHADE = 6;
+
+    /** GLYPHS: the atlas coverage under the pixel. */
+    protected const int GLYPH = 7;
+
+    /** @var array<int, array{VkImage, VkImageView, VkDeviceMemory}> Glyph atlases by number (R8), kept across frames until remade or released. */
+    private array $atlases = [];
+
     private const int WRITE_ALL = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     private VkInstance $instance;
@@ -858,10 +870,31 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
         return $this->presentWaits;
     }
 
+    /** The operations draw() handles. */
+    private const array OPS = [Op::CLEAR, Op::SCISSOR, Op::SOLID, Op::STENCIL_FILL, Op::COVER, Op::RECTS, Op::ELLIPSE, Op::RING, Op::UPLOAD, Op::IMAGE, Op::ROUNDRECT, Op::ROUNDRING, Op::SHADOW, Op::ATLAS, Op::MASK, Op::GLYPHS];
+
+    /**
+     * Every operation of $list is one draw() handles: checked before any GPU work, so an unknown one fails the
+     * frame loudly instead of being skipped, and no command buffer or render pass is left half-made.
+     *
+     * @throws DrawingException On the first operation it does not handle.
+     */
+    private static function known(DrawList $list): void
+    {
+        foreach ($list->operations as $operation) {
+            if (! in_array($operation[0], self::OPS, true)) {
+                $op = $operation[0] instanceof Op ? $operation[0]->name : get_debug_type($operation[0]);
+
+                throw new DrawingException("vulkan: unknown draw op {$op}");
+            }
+        }
+    }
+
     public function draw(DrawList $list): void
     {
         $this->live();
         ($this->framebuffer?->get()) ?? throw new DrawingException('vulkan: target() comes before draw().');
+        self::known($list);
         [$width, $height] = $this->extent;
         $slot = $this->frameSlot;
         $this->settle($slot);
@@ -889,7 +922,44 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
             $floats = [];
             /** @var list<array{VkImage, int, int}> $snapshots */
             $snapshots = [];
+            /** @var list<array{VkBuffer, VkImage, Region, bool}> $atlasWrites staging, atlas, region, new; in list order */
+            $atlasWrites = [];
             foreach ($list->operations as $operation) {
+                if ($operation[0] === Op::ATLAS) {
+                    // A new atlas is all zero. A frame in flight still reading the old one keeps it until its fence.
+                    [, $atlas, $atlasWidth, $atlasHeight] = $operation;
+                    $this->fits($atlasWidth, $atlasHeight);
+                    if (isset($this->atlases[$atlas])) {
+                        [$oldImage, $oldView, $oldMemory] = $this->atlases[$atlas];
+                        $transients[] = function () use ($oldImage, $oldView, $oldMemory): void {
+                            vkDestroyImageView($this->device, $oldView, null);
+                            vkDestroyImage($this->device, $oldImage, null);
+                            vkFreeMemory($this->device, $oldMemory, null);
+                        };
+                    }
+                    [$image, $memory] = $this->image(VK_FORMAT_R8_UNORM, $atlasWidth, $atlasHeight, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                    $this->atlases[$atlas] = [$image, $this->view($image, VK_FORMAT_R8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT), $memory];
+                    [$staging, $stagingMemory] = $this->stage(str_repeat("\0", $atlasWidth * $atlasHeight), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                    $transients[] = function () use ($staging, $stagingMemory): void {
+                        vkDestroyBuffer($this->device, $staging, null);
+                        vkFreeMemory($this->device, $stagingMemory, null);
+                    };
+                    $atlasWrites[] = [$staging, $image, Region::wholeSurface($atlasWidth, $atlasHeight), true];
+
+                    continue;
+                }
+                if ($operation[0] === Op::MASK) {
+                    // Only regions no earlier frame drew from: frames in flight read what they read before.
+                    [, $atlas, $region, $bytes] = $operation;
+                    [$staging, $stagingMemory] = $this->stage($bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                    $transients[] = function () use ($staging, $stagingMemory): void {
+                        vkDestroyBuffer($this->device, $staging, null);
+                        vkFreeMemory($this->device, $stagingMemory, null);
+                    };
+                    $atlasWrites[] = [$staging, $this->atlases[$atlas][0], $region, false];
+
+                    continue;
+                }
                 if ($operation[0] !== Op::UPLOAD) {
                     continue;
                 }
@@ -938,7 +1008,7 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
             }
 
             // One pool a frame: set 0 for the blank image, one per source, one for the restore.
-            $count = 1 + count($sources) + ($this->stale ? 1 : 0);
+            $count = 1 + count($sources) + count($this->atlases) + ($this->stale ? 1 : 0);
             $size = new VkDescriptorPoolSize;
             $size->type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             $size->descriptorCount = $count;
@@ -958,6 +1028,11 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
                 $setOf[$texture] = $set = array_shift($sets);
                 $writes[] = $this->descriptor($set, $view);
             }
+            $atlasSet = [];
+            foreach ($this->atlases as $atlas => [, $atlasView]) {
+                $atlasSet[$atlas] = $set = array_shift($sets);
+                $writes[] = $this->descriptor($set, $atlasView);
+            }
             $restoreSet = null;
             if ($this->stale) {
                 $restoreSet = array_shift($sets);
@@ -975,6 +1050,14 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
                 vkCmdPipelineBarrier($commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, [], [],
                     [self::barrier($image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT)]);
                 vkCmdCopyBufferToImage($commands, $staging, $image, VK_IMAGE_LAYOUT_GENERAL, [self::copyOf(new Region(0, 0, $w, $h))]);
+                vkCmdPipelineBarrier($commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, [], [],
+                    [self::barrier($image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT)]);
+            }
+
+            foreach ($atlasWrites as [$staging, $image, $region, $new]) {
+                vkCmdPipelineBarrier($commands, $new ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, [], [],
+                    [self::barrier($image, $new ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, $new ? 0 : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT)]);
+                vkCmdCopyBufferToImage($commands, $staging, $image, VK_IMAGE_LAYOUT_GENERAL, [self::copyOf($region)]);
                 vkCmdPipelineBarrier($commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, [], [],
                     [self::barrier($image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT)]);
             }
@@ -1064,6 +1147,36 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
                             abcd: [$inverse->a, $inverse->b, $inverse->c, $inverse->d], efwh: [$inverse->e, $inverse->f, (float) $w, (float) $h], floatSource: $floats[$texture]);
                         vkCmdDraw($commands, 6, 1, $first, 0);
                         break;
+
+                    case Op::ROUNDRECT:
+                    case Op::ROUNDRING:
+                        $ring = $operation[0] === Op::ROUNDRING;
+                        [, $first, $x0, $y0, $x1, $y1, $radii] = $operation;
+                        $this->paint($commands, 'fill', self::ROUNDBOX, $operation[$ring ? 8 : 7], shape: [$x0, $y0, $x1, $y1],
+                            band: [$ring ? (float) $operation[7] : 0.0, $ring ? 1.0 : 0.0, (float) $this->samples, 0.0], abcd: array_map(floatval(...), $radii));
+                        vkCmdDraw($commands, 6, 1, $first, 0);
+                        break;
+
+                    case Op::SHADOW:
+                        [, $first, $x0, $y0, $x1, $y1, $radius, $blur, $rgba] = $operation;
+                        $this->paint($commands, 'fill', self::SHADE, $rgba, shape: [$x0, $y0, $x1, $y1], band: [(float) $blur, (float) $radius, (float) $this->samples, 0.0]);
+                        vkCmdDraw($commands, 6, 1, $first, 0);
+                        break;
+
+                    case Op::ATLAS:
+                    case Op::MASK:
+                        // written before the pass, in list order
+                        break;
+
+                    case Op::GLYPHS:
+                        [, $first, $count, $texels, $atlas, $rgba] = $operation;
+                        vkCmdBindDescriptorSets($commands, VK_PIPELINE_BIND_POINT_GRAPHICS, $this->layout, 0, [$atlasSet[$atlas]], []);
+                        $this->paint($commands, 'fill', self::GLYPH, $rgba);
+                        // vertex $first + i reads its texel at vertex $texels + i: binding 1 over the same buffer, shifted
+                        vkCmdBindVertexBuffers($commands, 1, [$vertexBuffer], [($texels - $first) * 8]);
+                        vkCmdDraw($commands, $count, 1, $first, 0);
+                        vkCmdBindVertexBuffers($commands, 1, [$vertexBuffer], [0]);
+                        break;
                 }
             }
 
@@ -1096,7 +1209,8 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
         [$viewport->x, $viewport->y, $viewport->width, $viewport->height, $viewport->minDepth, $viewport->maxDepth] = [0.0, 0.0, (float) $width, (float) $height, 0.0, 1.0];
         vkCmdSetViewport($commands, 0, [$viewport]);
         vkCmdSetScissor($commands, 0, [self::rect(0, 0, $width, $height)]);
-        vkCmdBindVertexBuffers($commands, 0, [$vertexBuffer], [0]);
+        // binding 1 is the texel stream GLYPHS shifts; every other draw leaves it at the start
+        vkCmdBindVertexBuffers($commands, 0, [$vertexBuffer, $vertexBuffer], [0, 0]);
         vkCmdPushConstants($commands, $this->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, self::PUSH_FRAME, pack('g4', (float) $width, (float) $height, 0.0, 0.0));
     }
 
@@ -1126,14 +1240,24 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
 
             return $s;
         };
-        $binding = new VkVertexInputBindingDescription;
-        $binding->stride = 8;
-        $binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        $attribute = new VkVertexInputAttributeDescription;
-        $attribute->format = VK_FORMAT_R32G32_SFLOAT;
+        // location 0: the point (binding 0); location 1: a glyph's atlas texel (binding 1, the same buffer)
+        $bindings = [];
+        $attributes = [];
+        foreach ([0, 1] as $n) {
+            $binding = new VkVertexInputBindingDescription;
+            $binding->binding = $n;
+            $binding->stride = 8;
+            $binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+            $bindings[] = $binding;
+            $attribute = new VkVertexInputAttributeDescription;
+            $attribute->location = $n;
+            $attribute->binding = $n;
+            $attribute->format = VK_FORMAT_R32G32_SFLOAT;
+            $attributes[] = $attribute;
+        }
         $vertexInput = new VkPipelineVertexInputStateCreateInfo;
-        $vertexInput->pVertexBindingDescriptions = [$binding];
-        $vertexInput->pVertexAttributeDescriptions = [$attribute];
+        $vertexInput->pVertexBindingDescriptions = $bindings;
+        $vertexInput->pVertexAttributeDescriptions = $attributes;
         $assembly = new VkPipelineInputAssemblyStateCreateInfo;
         $assembly->topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         $viewport = new VkPipelineViewportStateCreateInfo;
@@ -2344,6 +2468,12 @@ class VulkanDevice implements GpuDevice, SwitchesVsync, QueuesFrames, ReportsPre
                 $this->lent = null;
                 $lent->release();
             }
+            foreach ($this->atlases as [$image, $view, $memory]) {
+                vkDestroyImageView($this->device, $view, null);
+                vkDestroyImage($this->device, $image, null);
+                vkFreeMemory($this->device, $memory, null);
+            }
+            $this->atlases = [];
             foreach ($this->owned as [$image, $view, $memory]) {
                 vkDestroyImageView($this->device, $view, null);
                 vkDestroyImage($this->device, $image, null);

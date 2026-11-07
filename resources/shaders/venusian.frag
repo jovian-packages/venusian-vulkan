@@ -6,13 +6,14 @@
 // HDR target (flags bit 1) colours are decoded from sRGB to linear light,
 // SDR white at 1.0; a half-float source (flags bit 2) is linear already.
 layout(location = 0) in vec2 at;
+layout(location = 1) in vec2 tex;
 layout(location = 0) out vec4 color;
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(push_constant) uniform Paint {
     layout(offset = 16) uvec4 mode_rgba[2];   // [0] = mode, opacity, linear, flags; [1] = r, g, b, a
-    vec4 shape;           // cx, cy, rx, ry
-    vec4 band;            // stroke, hole, samples, 0
-    vec4 abcd;            // the inverse placement
+    vec4 shape;           // cx, cy, rx, ry; ROUNDBOX and SHADE: x0, y0, x1, y1
+    vec4 band;            // stroke, hole, samples, 0; ROUNDBOX: inset, ring, samples, 0; SHADE: blur, radius, samples, 0
+    vec4 abcd;            // the inverse placement; ROUNDBOX: radii tl, tr, br, bl
     vec4 efwh;            // e, f, source width, source height
 };
 
@@ -21,6 +22,64 @@ const uint FILL = 1u;
 const uint OVAL = 2u;
 const uint IMAGE = 3u;
 const uint COPY = 4u;
+const uint ROUNDBOX = 5u;
+const uint SHADE = 6u;
+const uint GLYPH = 7u;
+
+// Velvet's alpha for a span of integer coverage v: (α · v + 127) / 255.
+float spanned(uint alpha, uint v)
+{
+    return float((alpha * v + 127u) / 255u) / 255.0;
+}
+
+// Where line y crosses a rounded box, as Rasterize's roundAcross() and Metal's across(): [ends.x, ends.y),
+// empty when ends.y <= ends.x. Above a corner's band the end is on the quarter circle r in from both sides.
+float corner(float cx, float cy, float r, float y, float side)
+{
+    float t = (y - cy) / r;
+    float h = r * sqrt(max(0.0, 1.0 - t * t));
+    return side < 0.0 ? cx - h : cx + h;
+}
+
+vec2 across(vec4 box, vec4 r, float y)
+{
+    if (y < box.y || y >= box.w) {
+        return vec2(0.0);
+    }
+    float left = box.x;
+    if (y < box.y + r.x) {
+        left = corner(box.x + r.x, box.y + r.x, r.x, y, -1.0);
+    } else if (y > box.w - r.w) {
+        left = corner(box.x + r.w, box.w - r.w, r.w, y, -1.0);
+    }
+    float right = box.z;
+    if (y < box.y + r.y) {
+        right = corner(box.z - r.y, box.y + r.y, r.y, y, 1.0);
+    } else if (y > box.w - r.z) {
+        right = corner(box.z - r.z, box.w - r.z, r.z, y, 1.0);
+    }
+    return vec2(left, right);
+}
+
+// A point in the rounded box and, for a ring, not in the box inset by band.x with radii max(0, r − inset).
+bool in_round(vec2 p)
+{
+    vec2 ends = across(shape, abcd, p.y);
+    if (!(ends.y > ends.x && p.x >= ends.x && p.x < ends.y)) {
+        return false;
+    }
+    if (band.y > 0.5) {
+        float inset = band.x;
+        vec4 hole = vec4(shape.xy + inset, shape.zw - inset);
+        if (hole.z > hole.x && hole.w > hole.y) {
+            vec2 inner = across(hole, max(abcd - inset, vec4(0.0)), p.y);
+            if (inner.y > inner.x && p.x >= inner.x && p.x < inner.y) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 // Velvet's alpha for a shape: (α · coverage + 127) / 255, coverage in 0..255.
 float shaped(uint alpha, float coverage)
@@ -72,6 +131,59 @@ void main()
             discard;
         }
         c = vec4(rgba.rgb, shaped(mode_rgba[1].w, coverage));
+    } else if (mode == ROUNDBOX) {
+        // One sample: in or out by the pixel's centre. Four: the share of a 4 x 4 grid in it (the pass runs once a pixel).
+        float coverage;
+        if (band.z < 2.0) {
+            coverage = in_round(centre) ? 1.0 : 0.0;
+        } else {
+            float hits = 0.0;
+            vec2 corner0 = floor(at);
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    hits += in_round(corner0 + (vec2(float(j), float(i)) + 0.5) / 4.0) ? 1.0 : 0.0;
+                }
+            }
+            coverage = hits / 16.0;
+        }
+        if (coverage <= 0.0) {
+            discard;
+        }
+        c = vec4(rgba.rgb, shaped(mode_rgba[1].w, coverage));
+    } else if (mode == SHADE) {
+        // Once a pixel, at its centre: 1 − smoothstep(−blur, blur, d), d the signed distance to the rounded box
+        // (Rasterize's roundDistance and shade(), Metal's shade, in the same order); held at 128 with one sample.
+        vec2 c0 = (shape.xy + shape.zw) / 2.0;
+        vec2 h = (shape.zw - shape.xy) / 2.0;
+        float r = band.y;
+        float blur = band.x;
+        vec2 q = abs(centre - c0) - h + r;
+        vec2 o = max(q, vec2(0.0));
+        float d = min(max(q.x, q.y), 0.0) + sqrt(o.x * o.x + o.y * o.y) - r;
+        float cover;
+        if (blur > 0.0) {
+            float t = clamp((d + blur) / (2.0 * blur), 0.0, 1.0);
+            cover = 1.0 - t * t * (3.0 - 2.0 * t);
+        } else {
+            cover = d < 0.0 ? 1.0 : 0.0;
+        }
+        uint v = uint(floor(cover * 255.0 + 0.5));
+        if (band.z < 2.0) {
+            v = v >= 128u ? 255u : 0u;
+        }
+        float a = spanned(mode_rgba[1].w, v);
+        if (a <= 0.0) {
+            discard;
+        }
+        c = vec4(rgba.rgb, a);
+    } else if (mode == GLYPH) {
+        // The atlas coverage under the pixel, nearest, as paintSpans() blends a span of that coverage.
+        uint v = uint(round(texelFetch(source, ivec2(floor(tex)), 0).r * 255.0));
+        float a = spanned(mode_rgba[1].w, v);
+        if (a <= 0.0) {
+            discard;
+        }
+        c = vec4(rgba.rgb, a);
     } else {
         // IMAGE: the source pixel under the inverse placement of the pixel centre.
         float u = abcd.x * centre.x + abcd.z * centre.y + efwh.x;

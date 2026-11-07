@@ -281,15 +281,16 @@ it('fills a path after an ellipse or a ring, the stencil marked in full', functi
 })->with(['ellipse', 'ring']);
 
 it('cancels a frame it cannot encode, and draws the next', function (): void {
-    // An image source wider than any texture: the upload fails mid-encode.
+    // An image source one pixel wider than this device's largest texture: the upload fails mid-encode.
     $engine = vulkanEngine(16, 8);
-    $wide = new NativeFullFramebuffer(FormatSpec::rgba8(), 20000, 1);
+    $largest = $engine->device()->maxImageDimension2D();
+    $wide = new NativeFullFramebuffer(FormatSpec::rgba8(), $largest + 1, 1);
     $before = residentMb();
 
     foreach (range(1, 40) as $i) {
         expect(fn () => $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 0, 0))->image($wide, 0, 0)))
-            ->toThrow(Surface\Contracts\Drawing\DrawingException::class, 'vulkan: 20000 × 1 is past the largest image this device makes, '
-                .$engine->device()->maxImageDimension2D().' × '.$engine->device()->maxImageDimension2D().'.');
+            ->toThrow(Surface\Contracts\Drawing\DrawingException::class, 'vulkan: '.($largest + 1).' × 1 is past the largest image this device makes, '
+                .$largest.' × '.$largest.'.');
     }
     $engine->frame(fn (RenderingEngine $g) => $g->clear(Color::rgb(0, 128, 255)));
 
@@ -304,5 +305,17 @@ it('enables incremental present, present id and present wait where the device li
 
     foreach ([VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME] as $name) {
         expect(in_array($name, $device->extensions(), true))->toBe(in_array($name, $listed, true) && ($name === VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME || $device->presentWaits()));
+    }
+});
+
+it('refuses an operation it does not draw, before any GPU work', function (): void {
+    $engine = vulkanEngine(8, 8);
+    $device = $engine->device();
+    $list = new \Surface\Drawing\Gpu\DrawList(8, 8, '', [['bogus', 0]]);
+
+    try {
+        expect(fn () => $device->draw($list))->toThrow(\Surface\Contracts\Drawing\DrawingException::class, 'vulkan: unknown draw op string');
+    } finally {
+        $engine->release();
     }
 });
