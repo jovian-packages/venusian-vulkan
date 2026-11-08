@@ -5,16 +5,19 @@
 // state does the source-over. SOLID and COPY run with blending off. On an
 // HDR target (flags bit 1) colours are decoded from sRGB to linear light,
 // SDR white at 1.0; a half-float source (flags bit 2) is linear already.
+// IMAGE flags: bit 4 rounded corners, bit 8 a window, bit 16 one sample (hard edges).
 layout(location = 0) in vec2 at;
 layout(location = 1) in vec2 tex;
 layout(location = 0) out vec4 color;
 layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 1, binding = 0) uniform sampler2D sharp;   // GLASS: the full-size capture (the blank image when none is bound)
 layout(push_constant) uniform Paint {
-    layout(offset = 16) uvec4 mode_rgba[2];   // [0] = mode, opacity, linear, flags; [1] = r, g, b, a
-    vec4 shape;           // cx, cy, rx, ry; ROUNDBOX and SHADE: x0, y0, x1, y1
-    vec4 band;            // stroke, hole, samples, 0; ROUNDBOX: inset, ring, samples, 0; SHADE: blur, radius, samples, 0
+    layout(offset = 16) uvec4 mode_rgba[2];   // [0] = mode, opacity, linear, flags; [1] = r, g, b, a (IMAGE: the tint)
+    vec4 shape;           // cx, cy, rx, ry; ROUNDBOX, SHADE and a rounded IMAGE: x0, y0, x1, y1
+    vec4 band;            // stroke, hole, samples, 0; ROUNDBOX: inset, ring, samples, 0; SHADE: blur, radius, samples, 0; a rounded IMAGE: radii tl, tr, br, bl; GRADIENT: kind (0 linear, 1 radial), spread (0 pad, 1 repeat, 2 reflect), 0, 0
     vec4 abcd;            // the inverse placement; ROUNDBOX: radii tl, tr, br, bl
     vec4 efwh;            // e, f, source width, source height
+    vec4 win;             // IMAGE with a window (flags bit 8): u0, v0, u1, v1 in source pixels; GLASS: the rim light's colour bytes
 };
 
 const uint SOLID = 0u;
@@ -25,6 +28,8 @@ const uint COPY = 4u;
 const uint ROUNDBOX = 5u;
 const uint SHADE = 6u;
 const uint GLYPH = 7u;
+const uint GRADIENT = 8u;
+const uint GLASS = 9u;
 
 // Velvet's alpha for a span of integer coverage v: (α · v + 127) / 255.
 float spanned(uint alpha, uint v)
@@ -81,6 +86,13 @@ bool in_round(vec2 p)
     return true;
 }
 
+// A point in a rounded box, as ROUNDBOX decides it, for an image's corners.
+bool in_box(vec2 p, vec4 box, vec4 r)
+{
+    vec2 ends = across(box, r, p.y);
+    return ends.y > ends.x && p.x >= ends.x && p.x < ends.y;
+}
+
 // Velvet's alpha for a shape: (α · coverage + 127) / 255, coverage in 0..255.
 float shaped(uint alpha, float coverage)
 {
@@ -103,6 +115,60 @@ vec3 linear_light(vec3 c)
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 
+// ---- GLASS: one pane over its box (ext-fb's fb_paint_glass() step for step) ----
+// shape: the box; abcd: radii tl, tr, br, bl; band: frost, refraction, bevel, saturation; efwh: light, grain, the backdrop's x, y;
+// win: the rim colour bytes; mode_rgba[0]: GLASS, the alpha, whether the sharp capture is bound, flags; mode_rgba[1]: the tint.
+// The level is half size (a scale of 2).
+
+// The signed distance from p to the rounded box, and its outward normal there.
+float glass_distance(vec2 p, out vec2 n)
+{
+    vec2 c = (shape.xy + shape.zw) * 0.5;
+    vec2 h = (shape.zw - shape.xy) * 0.5;
+    float r = p.x < c.x ? (p.y < c.y ? abcd.x : abcd.w) : (p.y < c.y ? abcd.y : abcd.z);
+    vec2 q = abs(p - c) - (h - r);
+    float d;
+    if (q.x > 0.0 && q.y > 0.0) {
+        float len = length(q);
+        d = len - r;
+        n = q / len;
+    } else if (q.x > q.y) {
+        d = q.x - r;
+        n = vec2(1.0, 0.0);
+    } else {
+        d = q.y - r;
+        n = vec2(0.0, 1.0);
+    }
+    n *= vec2(p.x < c.x ? -1.0 : 1.0, p.y < c.y ? -1.0 : 1.0);
+    return d;
+}
+
+vec3 glass_sample(sampler2D level, vec2 uv)
+{
+    ivec2 size = textureSize(level, 0);
+    vec2 f = floor(uv);
+    vec2 t = uv - f;
+    int x0 = clamp(int(f.x), 0, size.x - 1);
+    int x1 = clamp(int(f.x) + 1, 0, size.x - 1);
+    int y0 = clamp(int(f.y), 0, size.y - 1);
+    int y1 = clamp(int(f.y) + 1, 0, size.y - 1);
+    vec3 a = floor(texelFetch(level, ivec2(x0, y0), 0).rgb * 255.0 + 0.5);
+    vec3 b = floor(texelFetch(level, ivec2(x1, y0), 0).rgb * 255.0 + 0.5);
+    vec3 c = floor(texelFetch(level, ivec2(x0, y1), 0).rgb * 255.0 + 0.5);
+    vec3 d = floor(texelFetch(level, ivec2(x1, y1), 0).rgb * 255.0 + 0.5);
+    vec3 top = a + (b - a) * t.x;
+    vec3 under = c + (d - c) * t.x;
+    return top + (under - top) * t.y;
+}
+
+uint glass_grain(int x, int y)
+{
+    uint h = uint(x) * 374761393u + uint(y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return h & 65535u;
+}
+
 void main()
 {
     uint mode = mode_rgba[0].x;
@@ -111,6 +177,36 @@ void main()
     vec2 centre = floor(at) + 0.5;
     vec4 c;
 
+    if (mode == GLASS) {
+        vec2 n;
+        vec2 p = centre;
+        float d = glass_distance(p, n);
+        if (d >= 0.5) {
+            discard;
+        }
+        float a = floor(min(0.5 - d, 1.0) * float(mode_rgba[0].y) + 0.5);
+        if (a <= 0.0) {
+            discard;
+        }
+        float band_width = band.z > 0.0 ? band.z : (band.y > 0.0 ? band.y : 1.0);
+        float e = clamp(1.0 + d / band_width, 0.0, 1.0);
+        float fe = e * e;
+        vec2 s = p - n * band.y * fe;
+        vec3 g = glass_sample(source, (s - efwh.zw) / 2.0 - 0.5);
+        if (mode_rgba[0].z != 0u && band.x < 1.0) {
+            vec3 crisp = glass_sample(sharp, s - efwh.zw - 0.5);
+            g = crisp + (g - crisp) * band.x;
+        }
+        float luma = 0.2126 * g.r + 0.7152 * g.g + 0.0722 * g.b;
+        g = luma + (g - luma) * band.w;
+        g = g + (vec3(mode_rgba[1].rgb) - g) * (float(mode_rgba[1].a) / 255.0);
+        float lit = 0.5 + 0.5 * dot(n, vec2(-0.6, -0.8));
+        float grain = efwh.y * 0.04 * (float(glass_grain(int(floor(p.x)), int(floor(p.y)))) / 65536.0 - 0.5) * 255.0;
+        g = g + efwh.x * 255.0 + win.rgb * (win.a / 255.0) * fe * lit + grain;
+        vec3 out_rgb = clamp(floor(g + 0.5), 0.0, 255.0) / 255.0;
+        color = vec4(hdr ? linear_light(out_rgb) : out_rgb, a / 255.0);
+        return;
+    }
     if (mode == COPY) {
         color = texelFetch(source, ivec2(centre), 0);
         return;
@@ -176,6 +272,20 @@ void main()
             discard;
         }
         c = vec4(rgba.rgb, a);
+    } else if (mode == GRADIENT) {
+        // The ramp (the sampler, 256 x 1) at the position of this pixel centre along the gradient, nearest, as Velvet reads it.
+        float u = abcd.x * centre.x + abcd.z * centre.y + efwh.x;
+        float v = abcd.y * centre.x + abcd.w * centre.y + efwh.y;
+        float t = band.x < 0.5 ? u : length(vec2(u, v));
+        if (band.y < 0.5) {
+            t = clamp(t, 0.0, 1.0);
+        } else if (band.y < 1.5) {
+            t = t - floor(t);
+        } else {
+            float m = t - 2.0 * floor(t / 2.0);
+            t = m > 1.0 ? 2.0 - m : m;
+        }
+        c = texelFetch(source, ivec2(int(floor(t * 255.0 + 0.5)), 0), 0);
     } else if (mode == GLYPH) {
         // The atlas coverage under the pixel, nearest, as paintSpans() blends a span of that coverage.
         uint v = uint(round(texelFetch(source, ivec2(floor(tex)), 0).r * 255.0));
@@ -192,6 +302,30 @@ void main()
         float h = efwh.w;
         if (!(u >= 0.0 && u < w && v >= 0.0 && v < h)) {
             discard;
+        }
+        // the window crops; the pixels beside it are still read by the smooth filter
+        if ((mode_rgba[0].w & 8u) != 0u && !(u >= win.x && u < win.z && v >= win.y && v < win.w)) {
+            discard;
+        }
+        // rounded corners: the share of the pixel in the rounded box, as ROUNDBOX counts it
+        float cover = 1.0;
+        bool rounded = (mode_rgba[0].w & 4u) != 0u;
+        if (rounded) {
+            if ((mode_rgba[0].w & 16u) != 0u) {
+                cover = in_box(centre, shape, band) ? 1.0 : 0.0;
+            } else {
+                float hits = 0.0;
+                vec2 corner0 = floor(at);
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 4; j++) {
+                        hits += in_box(corner0 + (vec2(float(j), float(i)) + 0.5) / 4.0, shape, band) ? 1.0 : 0.0;
+                    }
+                }
+                cover = hits / 16.0;
+            }
+            if (cover <= 0.0) {
+                discard;
+            }
         }
         if (hdr) {
             // In floats: nearest, or bilinear weighed by alpha.
@@ -216,8 +350,10 @@ void main()
                 }
                 f = vec4(m.rgb / m.a, m.a);
             }
-            vec3 light = (mode_rgba[0].w & 2u) != 0u ? f.rgb : linear_light(f.rgb);
-            color = vec4(light, f.a * float(mode_rgba[0].y) / 255.0);
+            // the tint multiplies the source's own values, as they are stored
+            vec3 tinted = f.rgb * rgba.rgb;
+            vec3 light = (mode_rgba[0].w & 2u) != 0u ? tinted : linear_light(tinted);
+            color = vec4(light, f.a * rgba.a * float(mode_rgba[0].y) / 255.0 * cover);
             return;
         }
         uvec4 s;
@@ -252,8 +388,10 @@ void main()
             uint half_sum = sum / 2u;
             s = uvec4((rgb + half_sum) / sum, (sum + 32768u) >> 16);
         }
+        // Velvet's order: the tint (alpha too), then the opacity, then the coverage, each (x × y + 127) / 255
+        s = uvec4((s.xyz * mode_rgba[1].xyz + 127u) / 255u, (s.w * mode_rgba[1].w + 127u) / 255u);
         uint a = (s.w * mode_rgba[0].y + 127u) / 255u;
-        c = vec4(vec3(s.xyz) / 255.0, float(a) / 255.0);
+        c = vec4(vec3(s.xyz) / 255.0, rounded ? shaped(a, cover) : float(a) / 255.0);
     }
     if (hdr) {
         c.rgb = linear_light(c.rgb);

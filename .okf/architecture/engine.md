@@ -5,7 +5,7 @@ description: VulkanDevice - first non-CPU GPU, RGBA8 target kept in GENERAL, 4×
 resource: src/
 tags: [vulkan, moltenvk, v3dv, gpu, drawing]
 status: draft
-generated: { by: claude-opus/5.5, at: 2026-10-06T12:00:00Z }
+generated: { by: claude-opus/5.5, at: 2026-11-08T12:00:00Z }
 sources:
   - id: device
     resource: src/VulkanDevice.php
@@ -64,13 +64,13 @@ Reference 0 is baked into each pipeline: MoltenVK's portability subset has no se
 
 # Shaders and push constants
 
-GLSL 450 compiled with `glslangValidator -V -g` (the source is embedded; `ShadersTest` reads it). The fragment body is venusian-sdl3's. Push constants: vertex `vec4 size` at [0, 16); fragment `Paint` at [16, 112): `uvec4 mode_rgba[2]`, `vec4 shape`, `band`, `abcd`, `efwh`, the same 96 bytes sdl3's `paintBytes()` packs. Set 0 binding 0 is the combined image sampler (nearest, clamp; the shader uses `texelFetch`). The vertex stage maps pixel y = 0 to clip −1: image row 0 is the top, readback is top-down with no flip.[^frag]
+GLSL 450 compiled with `glslangValidator -V -g` (the source is embedded; `ShadersTest` reads it). The fragment body is venusian-sdl3's. Push constants: vertex `vec4 size` at [0, 16); fragment `Paint` at [16, 128): `uvec4 mode_rgba[2]`, `vec4 shape`, `band`, `abcd`, `efwh`, `win`, 112 bytes: 128 push-constant bytes in all, what Vulkan guarantees. An IMAGE with a tint, a window or rounded corners uses the same block: the tint is `mode_rgba[1]`, the rounded box is `shape` and its radii `band`, the window is `win`, and flags bits 4 (rounded), 8 (windowed) and 16 (one sample) say which apply. Set 0 binding 0 is the combined image sampler (nearest, clamp; the shader uses `texelFetch`). The vertex stage maps pixel y = 0 to clip −1: image row 0 is the top, readback is top-down with no flip.[^frag]
 
 # A frame
 
 1. `finish()`: wait the last frame's fence, free its transients.
-2. Vertex buffer (host-visible, flushed): the list's vertices plus one whole-target quad.
-3. Sources: a `VulkanFramebuffer` of this device is sampled through its own view, except the current target, which is this frame's attachment: it is blitted into a transient image before the passes and the copy is sampled. Anything else gets a sampled image, a staging buffer, and a copy recorded before the passes.
+2. Vertex buffer (device-local, pooled by size class: powers of two, 4 KiB at least, 6 a class): the list's vertices plus one whole-target quad, written by `vkCmdUpdateBuffer` in the frame's command buffer, in chunks of at most 65,536 bytes, before the passes. Source images (and their views) are pooled by format and size (6 a size, 32 sizes) and given back once the frame's fence has signalled with the buffer.
+3. Sources: a `VulkanFramebuffer` of this device is sampled through its own view, except the current target, which is this frame's attachment: it is blitted into a transient image before the passes and the copy is sampled. Anything else gets a pooled sampled image (made with host transfer usage and put into GENERAL by the host, once), which the host fills with `vkCopyMemoryToImage` before the frame is submitted.
 4. One descriptor pool for the frame: the blank 1 × 1 image (bound for every draw that samples nothing), one set per source, one for the restore.
 5. Restore pass (4× only, after an upload marked the samples stale): the DONT_CARE pass, which has no resolve attachment, draws the resolved image back into the 4× colour in COPY mode. The samples count as restored only once the frame is submitted.
 6. The frame's LOAD pass: viewport, scissor, vertex buffer, vertex push, blank set; per operation bind pipeline, push `Paint`, draw.
@@ -78,7 +78,7 @@ GLSL 450 compiled with `glslangValidator -V -g` (the source is embedded; `Shader
 
 # Readback and upload
 
-Through the one-time command buffer, submitted and `vkQueueWaitIdle`'d. Staging memory is host-visible, coherent preferred. Upload: map, write, `vkFlushMappedMemoryRanges`, copy buffer → image. Readback: copy image → buffer, a `VkMemoryBarrier` transfer-write → host-read, map, `vkInvalidateMappedMemoryRanges`, read. Ranges are rounded up to `nonCoherentAtomSize` and capped at the allocation: right on non-coherent memory, free on coherent.
+By the host, with the device's host image copies (Vulkan 1.4, the `hostImageCopy` feature, enabled at device creation; a device without it is refused by name): `vkCopyMemoryToImage` and `vkCopyImageToMemory` on images made with `VK_IMAGE_USAGE_HOST_TRANSFER_BIT` and in GENERAL (`vkTransitionImageLayout` moves a new one from UNDEFINED). The target is such an image. Each waits for the frames in flight first (`finish()`). The atlas is written the same way (new texels only, after a wait). A dmabuf export is read through a copy of it in a host-transfer image. The package maps no memory: every host byte travels through these Vulkan calls.
 
 # Presenting
 

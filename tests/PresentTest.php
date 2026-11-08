@@ -26,7 +26,7 @@ function layerSurface(CAMetalLayer $layer, int $width = 64, int $height = 32): L
 
 describe('presenting into a Metal layer', function (): void {
     beforeEach(function (): void {
-        if (! VULKAN_MAC || ! class_exists(CAMetalLayer::class)) {
+        if (! VULKAN_MAC) {
             $this->markTestSkipped('presenting is proven against a Metal layer; Linux surfaces come from a toolkit in 11b');
         }
     });
@@ -118,7 +118,7 @@ describe('presenting into a Metal layer', function (): void {
         $device->adopt($surface);
         $minimised = $device->present($surface);
         $size = [64, 32];
-        $layer->setDrawableSize(new CGSize(64.0, 32.0));
+        $layer->setDrawableSize(new NSSize(64.0, 32.0));
         $shown = $device->present($surface);
 
         expect($minimised)->toBeFalse()

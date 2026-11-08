@@ -300,7 +300,8 @@ it('cancels a frame it cannot encode, and draws the next', function (): void {
 
 it('enables incremental present, present id and present wait where the device lists them', function (): void {
     $device = new VulkanDevice;
-    vkEnumerateDeviceExtensionProperties($device->physical(), null, $available);
+    vkEnumerateDeviceExtensionProperties($device->physical(), null, $count, null);
+    vkEnumerateDeviceExtensionProperties($device->physical(), null, $count, $available);
     $listed = array_map(fn (VkExtensionProperties $e): string => $e->extensionName, $available ?? []);
 
     foreach ([VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME] as $name) {
@@ -318,4 +319,27 @@ it('refuses an operation it does not draw, before any GPU work', function (): vo
     } finally {
         $engine->release();
     }
+});
+
+it('draws every frame the same through the vertex ring and the pooled source textures', function (): void {
+    $engine = vulkanEngine(64, 48);
+    $image = new \Surface\Framebuffers\Native\NativeFullFramebuffer(\Surface\Contracts\Framebuffers\FormatSpec::rgba8(), 8, 8);
+    $image->writeRgba8(str_repeat("\x20\x80\xe0\xff", 64), 8, 8);
+    // a frame with few vertices, then one with many (the ring buffer grows), then the first again: six frames wrap the ring twice
+    $scene = fn (int $shapes) => function (\Surface\Contracts\Drawing\RenderingEngine $g) use ($image, $shapes): void {
+        $g->clear(\Surface\NutsAndBolts\Color::rgb(10, 20, 30));
+        for ($i = 0; $i < $shapes; $i++) {
+            $g->roundRect(($i * 3) % 56, ($i * 5) % 40, 8, 6, [2, 2, 2, 2], \Surface\NutsAndBolts\Color::rgb(200, ($i * 7) % 256, 50));
+        }
+        $g->image($image, 4, 4);
+    };
+    $frames = [];
+    foreach ([3, 3000, 3, 3000, 3, 3000] as $shapes) {
+        $engine->frame($scene($shapes));
+        $frames[] = $engine->framebuffer()->toRgba8();
+    }
+
+    expect($frames[2])->toBe($frames[0])->and($frames[4])->toBe($frames[0])
+        ->and($frames[3])->toBe($frames[1])->and($frames[5])->toBe($frames[1])
+        ->and($frames[1])->not->toBe($frames[0]);
 });
