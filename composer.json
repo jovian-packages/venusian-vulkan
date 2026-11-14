@@ -1,6 +1,6 @@
 {
     "name": "jovian/venusian-vulkan",
-    "description": "The 'vulkan' rendering engine for Venusian Surface: a GpuDevice over ext-vulkan that draws Surface's draw lists on V3DV, MoltenVK or any Vulkan 1.1+ GPU and presents into a surface a canvas lends.",
+    "description": "The 'vulkan' graphics engine for Venusian Topside: a device, framebuffer and rasterizer over ext-vulkan, on MoltenVK or any Vulkan GPU with host image copies.",
     "type": "library",
     "keywords": [
         "framework",
@@ -25,16 +25,11 @@
     ],
     "require": {
         "php": "~8.4.27||^8.5.12",
-        "ext-posi": "^0.11.0",
         "ext-vulkan": "^0.11.0",
-        "venusian-surface/contracts": "^0.11.0",
-        "venusian-surface/drawing": "^0.11.0",
-        "venusian-surface/framebuffers": "^0.11.0",
-        "venusian-voyager/nuts-and-bolts": "^0.11.0"
+        "venusian/topside": "^0.11.5"
     },
     "require-dev": {
-        "pestphp/pest": "^4",
-        "venusian-surface/fonts": "^0.11.0"
+        "pestphp/pest": "^4"
     },
     "autoload": {
         "psr-4": {

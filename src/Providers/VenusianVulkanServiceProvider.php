@@ -2,30 +2,21 @@
 
 namespace Jovian\Engines\Vulkan\Providers;
 
-use Jovian\Engines\Vulkan\VulkanDevice;
-use Surface\Drawing\DrawingManager;
-use Surface\Drawing\Gpu\GpuRenderingEngine;
+use Jovian\Engines\Vulkan\VKLogicalDevice;
+use Surface\Contracts\Graphics\Backend;
+use Surface\Graphics\Gfx;
+use Surface\Rendering\Recorders;
 use Voyager\NutsAndBolts\ServiceProvider;
 
-/**
- * Registers the 'vulkan' engine with the drawing manager: each renderer() call
- * builds a new engine over a new VulkanDevice from the shared arguments.
- */
+/** Registers the 'vulkan' engine with Graphics, on the GPU backend. */
 class VenusianVulkanServiceProvider extends ServiceProvider
 {
-    public function register(): void
-    {
-
-    }
+    public function register(): void {}
 
     public function boot(): void
     {
-        self::extend($this->app->get('drawing'));
-    }
-
-    /** The engine's creator, on any drawing manager. */
-    public static function extend(DrawingManager $drawing): void
-    {
-        $drawing->extend('vulkan', fn (array $args, DrawingManager $drawing): GpuRenderingEngine => GpuRenderingEngine::from(new VulkanDevice, $args, $drawing));
+        if (extension_loaded('vulkan')) {
+            Gfx::manager()->extend('vulkan', fn (Backend $backend) => new VKLogicalDevice($backend, recorder: fn () => Recorders::driver()->recorder()), Backend::GPU);
+        }
     }
 }
